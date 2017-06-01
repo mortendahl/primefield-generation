@@ -1,0 +1,10 @@
+[package]
+name = "primefield"
+version = "0.1.0"
+authors = ["Morten Dahl <mortendahlcs@gmail.com>"]
+
+[dependencies]
+rand = "0.3"
+ramp = "0.3"
+num-traits = "0.1"
+primal = "0.2"
