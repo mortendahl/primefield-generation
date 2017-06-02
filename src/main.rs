@@ -344,13 +344,19 @@ fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
     let omega_n = modpow(&generator, &exponent_n, &prime);
     let omega_m = modpow(&generator, &exponent_m, &prime);
     
+    use std::collections::HashSet;
     assert![ is_prime(&prime) ];
     assert!(&order % Int::from(n) == 0);
     assert!(&order % Int::from(m) == 0);
     assert![ modpow(&omega_n, Int::from(n), &prime) == Int::one() ];
     assert![ modpow(&omega_m, Int::from(m), &prime) == Int::one() ];
-    for e in 1..n { assert![ modpow(&omega_n, Int::from(e), &prime) != Int::one() ]; }
-    for e in 1..m { assert![ modpow(&omega_m, Int::from(e), &prime) != Int::one() ]; }
+    let group_n: HashSet<_> = (1..n).map(|e| modpow(&omega_n, Int::from(e), &prime) ).collect();
+    let group_m: HashSet<_> = (1..m).map(|e| modpow(&omega_m, Int::from(e), &prime) ).collect();
+    assert![ group_n.len() == n - 1 ];
+    assert![ group_m.len() == m - 1 ];
+    assert![ ! group_n.contains(&Int::one()) ];
+    assert![ ! group_m.contains(&Int::one()) ];
+    assert![ group_n.intersection(&group_m).count() == 0 ];
     
     return Parameters {
         prime: prime,
@@ -363,7 +369,7 @@ fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
 #[test]
 fn test_find_parameters() {
     assert_eq![
-        find_parameters(2, 8, 9),
+        find_parameters(8, 8, 9),
         Parameters { 
             prime: Int::from(433), 
             generator: Int::from(5), 
@@ -375,6 +381,6 @@ fn test_find_parameters() {
 
 fn main() {
     let params = find_parameters(128, 2*2*2*2*2*2*2*2, 9*9*9);
-    println!("Parameters are {:?}", params);
+    println!("{:?}", params);
     assert!(is_prime(&params.prime));
 }
