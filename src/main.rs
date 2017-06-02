@@ -3,32 +3,34 @@ extern crate ramp;
 extern crate num_traits;
 extern crate primal;
 
+use std::borrow::Borrow;
 use rand::OsRng;
-use std::str::FromStr;
 use ramp::Int;
 use ramp::RandomInt;
-use num_traits::{Zero, One};
+use num_traits::Zero;
+
+#[cfg(test)]
+use std::str::FromStr;
 
 fn sample(bitsize: usize) -> Int {
     let mut rng = OsRng::new().unwrap();
     rng.gen_uint(bitsize)
 }
 
-fn sample_below(upper: &Int) -> Int {
+fn sample_below<U: Borrow<Int>>(upper: U) -> Int {
     let mut rng = OsRng::new().unwrap();
-    rng.gen_uint_below(upper)
+    rng.gen_uint_below(upper.borrow())
 }
 
-fn sample_range(lower: &Int, upper: &Int) -> Int {
+fn sample_range<L: Borrow<Int>, U: Borrow<Int>>(lower: L, upper: U) -> Int {
     let mut rng = OsRng::new().unwrap();
-    rng.gen_int_range(lower, upper)
+    rng.gen_int_range(lower.borrow(), upper.borrow())
 }
 
 fn sample_prime(bitsize: usize) -> Int {
     // See Practical Considerations section inside the section 11.5 "Prime Number Generation"
     // Applied Cryptography, Bruce Schneier.
-    let one = Int::one();
-    let two = &one + &one;
+    let two = Int::from(2);
 
     loop {
         let mut candidate = sample(bitsize);
@@ -42,7 +44,7 @@ fn sample_prime(bitsize: usize) -> Int {
         // If no prime number is found in 500 iterations, restart the loop (re-seed).
         for _ in 0..500 {
             if is_prime(&candidate) {
-                return candidate;
+                return candidate
             }
             candidate = candidate + &two;
         }
@@ -55,46 +57,49 @@ fn sample_prime(bitsize: usize) -> Int {
 // 1. Divide the candidate by the smaller prime numbers.
 // 2. Run Fermat's Little Theorem against the candidate.
 // 3. Run five rounds of the Miller-Rabin test on the candidate.
-fn is_prime(candidate: &Int) -> bool
+fn is_prime<C: Borrow<Int>>(candidate: C) -> bool
 {
+    let candidate = candidate.borrow();
+    
     // First, simple trial divide
-    for p in primal::Primes::all().take(2048) {
+    // TODO testing against a high number of primes is probably overkill; BoringSSL uses 2048
+    for p in primal::Primes::all().take(10000) {
         let p = Int::from(p);
-        if *candidate == p {
+        if p == *candidate {
             return true
-        } else {
-            let r = candidate % &p;
-            if !r.is_zero() {
-                continue
-            } else {
-                return false
-            }
+        }
+        if candidate % &p == 0 {
+            return false
         }
     }
+    
     // Second, do a little Fermat test on the candidate
     if !fermat(candidate) {
         return false
     }
 
     // Finally, do a Miller-Rabin test
-    // NIST recommendation is 5 rounds for 512 and 1024 bits. For 1536 bits, the recommendation is 4 rounds.
-    if !miller_rabin(candidate, 5) {
+    // NIST recommendation is 5 rounds for 512 and 1024 bits. 
+    // For 1536 bits, the recommendation is 4 rounds.
+    // TODO how many rounds should we do?
+    if !miller_rabin(candidate, 20) {
         return false
     }
+    
     true
 }
 
-fn modpow(base: &Int, exponent: &Int, modulus: &Int) -> Int 
+fn modpow<B: Borrow<Int>, E: Borrow<Int>, M: Borrow<Int>>(base: B, exponent: E, modulus: M) -> Int 
 {
-    let mut base = base.clone();
-    let mut exponent = exponent.clone();
+    let mut base = base.borrow().clone();
+    let mut exponent = exponent.borrow().clone();
+    
     let mut result = Int::one();
-
     while !Int::is_zero(&exponent) {
         if !Int::is_even(&exponent) {
-            result = (&result * &base) % modulus;
+            result = (&result * &base) % modulus.borrow();
         }
-        base = (&base * &base) % modulus;  // waste one of these by having it here but code is simpler (tiny bit)
+        base = (&base * &base) % modulus.borrow();  // waste one of these by having it here but code is simpler (tiny bit)
         exponent = exponent >> 1;
     }
     result
@@ -113,40 +118,66 @@ fn fermat(candidate: &Int) -> bool
 //  500 bits => 6 iterations
 // 1000 bits => 3 iterations
 // 2000 bits => 2 iterations
-fn miller_rabin(candidate: &Int, limit: usize) -> bool
+fn miller_rabin(candidate: &Int, iterations: usize) -> bool
 {
-    let (s, d) = rewrite(&(candidate - Int::one()));
-    let one = Int::one();
-    let two = &one + &one;
-
-    for _ in 0..limit {
-        let basis = sample_range(&two, &(candidate-&two));
+    // constants for optimisations
+    let one = Int::from(1);
+    let two = Int::from(2);
+    let three = Int::from(3);
+    let minusone = candidate - &one;
+    
+    // corner cases that otherwise makes sampling fail below
+    if candidate ==   &one { return false }
+    if candidate ==   &two { return true }
+    if candidate == &three { return true }
+    
+    let (s, d) = rewrite(candidate - &one);
+    
+    (0..iterations).all(|_| {
+        let basis = sample_range(&two, candidate - &one);
+        
         let mut y = modpow(&basis, &d, candidate);
-
-        if y == one || y == (candidate - &one) {
-            continue;
-        } else {
-            let mut counter = Int::one();
-            while counter < (&s-&one){
-                y = modpow(&y, &two, candidate);
-                if y == one {
-                    return false
-                } else if y == candidate - &one {
-                    break;
-                }
-                counter = counter + Int::one();
-            }
-            return false;
+        if y == one {
+            return true
         }
-    }
-    true
+        
+        let mut counter = Int::zero();
+        while counter <= (&s - &one) {
+            if y == minusone {
+                return true
+            }
+            if y == one {
+                return false
+            }
+            y = modpow(&y, &two, candidate);
+            counter = counter + &one;
+        }
+        
+        return false
+    })
+}
+
+#[test]
+fn test_miller_rabin() {
+    assert!(miller_rabin(&Int::from(2), 10));
+    assert!(miller_rabin(&Int::from(3), 10));
+    assert!(miller_rabin(&Int::from(5), 10));
+    assert!(miller_rabin(&Int::from(7), 10));
+    assert!(miller_rabin(&Int::from(11), 10));
+    assert!(miller_rabin(&Int::from(433), 10));
+    
+    assert!( ! miller_rabin(&Int::from(1), 10));
+    assert!( ! miller_rabin(&Int::from(4), 10));
+    assert!( ! miller_rabin(&Int::from(9), 10));
+    assert!( ! miller_rabin(&Int::from(21), 10));
+    assert!( ! miller_rabin(&Int::from(256), 10));
 }
 
 // rewrites a number n =  2^s * d
 // (i.e., 2^s is the largest power of 2 that divides the candidate).
-fn rewrite(n: &Int) -> (Int, Int)
+fn rewrite<N: Borrow<Int>>(n: N) -> (Int, Int)
 {
-     let mut d = n.clone();
+     let mut d = n.borrow().clone();
      let mut s = Int::zero();
      let one = Int::one();
 
@@ -154,14 +185,14 @@ fn rewrite(n: &Int) -> (Int, Int)
          d = d >> 1_usize;
          s = &s + &one;
      }
-     (s,d)
+     
+     (s, d)
 }
 
-fn remove_factor(factor: &Int, mut m: Int) -> Int {
-    let mut exponent: usize = 0;
+fn remove_factor(factor: &Int, mut m: Int) -> Int 
+{
     while (m != 1) && (&m % factor == 0) {
         m /= factor;
-        exponent += 1;
     }
     return m
 }
@@ -173,161 +204,97 @@ fn test_remove_factor() {
     assert_eq![remove_factor(&Int::from(3), Int::from(9)), Int::from(1)];
 }
 
-fn prime_factor(n: &Int) -> Vec<Int> {    
-    assert!(*n >= Int::from(1));
+fn prime_factor<N: Borrow<Int>>(n: N) -> Vec<Int> 
+{
+    assert!(*n.borrow() >= Int::from(1));
     
     let mut prime_factors = vec![];
-    
-    let mut remaining = n.clone();
-    let mut factor = Int::from(2);
+    let mut remaining = n.borrow().clone();
     
     for q in primal::Primes::all() {
         if remaining == 1 { break }
         
-        factor = Int::from(q);
+        let factor = Int::from(q);
         if &remaining % &factor == 0 {
-            prime_factors.push(factor.clone());
-            println!("found factor {:?}", factor);
             remaining = remove_factor(&factor, remaining);
+            prime_factors.push(factor);
         }
     }
     
-    println!("Trying large primes");
-    loop {
-        if remaining == 1 { break }
-        
-        if is_prime(&remaining) {
-            prime_factors.push(remaining.clone());
-            println!("found factor {:?}", factor);
-            remaining = remove_factor(&factor, remaining);
-        } else {
-            loop {
-                factor += 1;
-                if &remaining % &factor == 0 {
-                    prime_factors.push(factor.clone());
-                    println!("found factor {:?}", factor);
-                    remaining = remove_factor(&factor, remaining);
-                    break
-                }
-            }
-        }
-    }
+    // TODO
+    // factoring further than what's done above is horribly slow,
+    // so assume for now that we never have to use it, ie that inputs
+    // are small enough to only have prime factors found above
+    assert!(remaining == 1);
     
-    return prime_factors
+    prime_factors
 }
 
 #[test]
 fn test_prime_factor() {
     assert_eq![
-        prime_factor(&Int::from(1)),
-        vec![]
+        prime_factor(Int::from(1)),
+        vec![].into_iter().map(|f: usize| Int::from(f)).collect::<Vec<Int>>()
     ];
     
     assert_eq![
-        prime_factor(&Int::from(2)),
+        prime_factor(Int::from(2)),
         vec![2].into_iter().map(|f| Int::from(f)).collect::<Vec<_>>()
     ];
     
     assert_eq![
-        prime_factor(&Int::from(6)),
+        prime_factor(Int::from(6)),
         vec![2, 3].into_iter().map(|f| Int::from(f)).collect::<Vec<_>>()
     ];
     
     assert_eq![
-        prime_factor(&Int::from(24)),
+        prime_factor(Int::from(24)),
         vec![2, 3].into_iter().map(|f| Int::from(f)).collect::<Vec<_>>()
     ];
     
     assert_eq![
-        prime_factor(&Int::from_str("4297130280").unwrap()),
+        prime_factor(Int::from_str("4297130280").unwrap()),
         vec![2, 3, 5, 2281, 5233].into_iter().map(|f| Int::from(f)).collect::<Vec<_>>()
     ];
-    
-    // assert_eq![
-    //     prime_factor(&Int::from_str("18446744073713353129").unwrap()),
-    //     vec![3, 5, 2281, 5233].into_iter().map(|f| Int::from(f)).collect::<Vec<_>>()
-    // ];
 }
 
-fn find_prime(min_size: &Int, n: &Int, m: &Int) -> Int
+// TODO
+// TODO returned prime is too large
+// TODO
+
+const SLACK_BOUND: usize = 128; // must be >= 2
+
+/// Finds a prime p and the prime factors of its order such that p has a subgroup of order d
+fn find_prime<D: Borrow<Int>>(bitsize: usize, d: D) -> (Int, Vec<Int>) 
 {
-    let mut k = (min_size - 1) / (n * m) + 1;
     loop {
-        let q = &k * n * m;
-        let p = q + 1;
+        let k1 = sample_prime(bitsize);
         
-        if is_prime(&p) { 
-            return p
-        }
-        
-        k += 1;
-    }
-}
-
-fn find_generator(p: &Int) -> Int 
-{
-    let q = p - 1;
-    let prime_factors = prime_factor(&q);
-    let mut candidate = Int::from(2);
-    loop {
-        if prime_factors.iter().all(|factor| {
-            let exponent = &q / factor;
-            modpow(&candidate, &exponent, p) != Int::one()
-        }) {
-            return candidate
-        }
-        candidate += 1;
-    }
-}
-
-fn find_field(min_size: &Int, n: &Int, m: &Int) -> (Int, Int) {
-    let p = find_prime(&min_size, &n, &m);
-    let g = find_generator(&p);
-    
-    let order = &p - 1;
-    assert!(&order % n == 0);
-    assert!(&order % m == 0);
-    
-    return (p, g)
-}
-
-#[test]
-fn test_find_field() {
-    assert_eq![
-        find_field(&Int::from(200), &Int::from(8), &Int::from(9)),
-        (Int::from(433), Int::from(5))
-    ];
-}
-
-
-/// Finds a prime p and the prime factors of its order such that p has a subgroup of order c
-fn new_find_prime<C: Borrow<Int>>(min_bitsize: usize, c: C) -> (Int, Vec<Int>) {
-    loop {
-        let k1 = sample_prime(min_bitsize);
-        
-        for k2 in (1..5000).map(|n| Int::from(n)) {
-            let p = &k1 * &k2 * c.borrow() + 1;
+        // allowing this k2 factor seems to save some sampling (one iteration of loop enough seems)
+        for k2 in (1..SLACK_BOUND).map(|n| Int::from(n)) {
+            let candidate = &k1 * &k2 * d.borrow() + 1;
             
-            if is_prime(&p) {
+            if is_prime(&candidate) {     
                 let mut prime_factors = vec![k1];
-                prime_factors.extend(prime_factor(&k2));
-                prime_factors.extend(prime_factor(c.borrow()));
+                prime_factors.extend(prime_factor(k2));
+                prime_factors.extend(prime_factor(d.borrow()));
                 prime_factors.sort();
                 prime_factors.dedup();
-                return (p, prime_factors)
+                return (candidate, prime_factors)
             }
         }
     }
 }
 
-fn new_find_generator(p: &Int, prime_factors: &[Int]) -> Int 
+/// Finds a generator of Z_p given the prime factors of p-1
+fn find_generator<P: Borrow<Int>>(p: P, prime_factors: &[Int]) -> Int 
 {
-    let q = p - 1;
+    let q = p.borrow() - 1;
     let mut candidate = Int::from(2);
     loop {
         if prime_factors.iter().all(|factor| {
             let exponent = &q / factor;
-            modpow(&candidate, &exponent, p) != Int::one()
+            modpow(&candidate, &exponent, p.borrow()) != Int::one()
         }) {
             return candidate
         }
@@ -335,38 +302,79 @@ fn new_find_generator(p: &Int, prime_factors: &[Int]) -> Int
     }
 }
 
-use std::borrow::Borrow;
-fn new_find_field<N: Borrow<Int>, M: Borrow<Int>>(min_bitsize: usize, n: N, m: M) -> (Int, Int) {
-    let (p, prime_factors) = new_find_prime(min_bitsize, n.borrow() * m.borrow());
-    println!("{:?}", prime_factors);
-    
-    let g = new_find_generator(&p, &prime_factors);
-    
-    let order = &p - 1;
-    assert!(&order % n.borrow() == 0);
-    assert!(&order % m.borrow() == 0);
-    
-    return (p, g)
+fn find_field<D: Borrow<Int>>(bitsize: usize, order_divisor: D) -> (Int, Int) 
+{
+    let (p, prime_factors) = find_prime(bitsize, order_divisor);
+    let g = find_generator(&p, &prime_factors);
+    (p, g)
 }
 
+#[test]
+fn test_find_field() {
+    assert_eq![
+        find_field(2, Int::from(2*2*2 * 3*3)),
+        (Int::from(433), Int::from(5))
+    ];
+}
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Parameters {
+    prime: Int,
+    generator: Int,
+    omega_n: Int,
+    omega_m: Int,
+}
+
+fn bit_length(x: usize) -> usize {
+    f64::ceil(f64::log(x as f64, 2_f64)) as usize
+}
+
+fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
+{
+    let order_divisor = n * m;
+    let recalibrated_bitsize = desired_bitsize - bit_length(order_divisor) + 1;
+    
+    let (prime, generator) = find_field(recalibrated_bitsize, Int::from(order_divisor));
+    assert![prime.bit_length() as usize >= desired_bitsize];
+    assert![prime.bit_length() as usize <= desired_bitsize + bit_length(SLACK_BOUND) + 1]; // TODO verify +1 rounding
+    
+    let order = &prime - 1;
+    let exponent_n = &order / Int::from(n);
+    let exponent_m = &order / Int::from(m);
+    let omega_n = modpow(&generator, &exponent_n, &prime);
+    let omega_m = modpow(&generator, &exponent_m, &prime);
+    
+    assert![ is_prime(&prime) ];
+    assert!(&order % Int::from(n) == 0);
+    assert!(&order % Int::from(m) == 0);
+    assert![ modpow(&omega_n, Int::from(n), &prime) == Int::one() ];
+    assert![ modpow(&omega_m, Int::from(m), &prime) == Int::one() ];
+    for e in 1..n { assert![ modpow(&omega_n, Int::from(e), &prime) != Int::one() ]; }
+    for e in 1..m { assert![ modpow(&omega_m, Int::from(e), &prime) != Int::one() ]; }
+    
+    return Parameters {
+        prime: prime,
+        generator: generator,
+        omega_n: omega_n,
+        omega_m: omega_m,
+    }
+}
+
+#[test]
+fn test_find_parameters() {
+    assert_eq![
+        find_parameters(2, 8, 9),
+        Parameters { 
+            prime: Int::from(433), 
+            generator: Int::from(5), 
+            omega_n: Int::from(354),
+            omega_m: Int::from(150),
+        }
+    ];
+}
 
 fn main() {
-    let min_size = Int::one() << 128;
-    // let min_size = Int::one() << 64;
-    // let min_size = Int::from(200);
-    let n = Int::from(8);
-    let m = Int::from(9);
-    
-    let (p, g) = new_find_field(128, &n, &m);
-    println!("Prime is {:?}", p);
-    println!("Generator is {:?}", g);
-    
-    let order = &p - Int::one();
-    let exponent_n = &order / &n;
-    let exponent_m = &order / &m;
-    let omega_n = modpow(&g, &exponent_n, &p);
-    let omega_m = modpow(&g, &exponent_m, &p);
-    println!("{:?}-th root is {:?}", n, omega_n);
-    println!("{:?}-th root is {:?}", m, omega_m);
+    let params = find_parameters(128, 2*2*2*2*2*2*2*2, 9*9*9);
+    println!("Parameters are {:?}", params);
+    assert!(is_prime(&params.prime));
 }
