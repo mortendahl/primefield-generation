@@ -200,7 +200,7 @@ fn remove_factor(factor: &Int, mut m: Int) -> Int
 #[test]
 fn test_remove_factor() {
     assert_eq![remove_factor(&Int::from(2), Int::from(5)), Int::from(5)];
-    assert_eq![remove_factor(&Int::from(2), Int::from(6)), Int::from(3)];
+    assert_eq![remove_factor(&Int::from(2), Int::from(12)), Int::from(3)];
     assert_eq![remove_factor(&Int::from(3), Int::from(9)), Int::from(1)];
 }
 
@@ -258,26 +258,25 @@ fn test_prime_factor() {
     ];
 }
 
-// TODO
-// TODO returned prime is too large
-// TODO
-
-const SLACK_BOUND: usize = 128; // must be >= 2
+/// This specifies the number of bits allowed for the slack parameter (k2 in `find_prime`),
+/// ie the number of bits the prime size may go above the desired size.
+/// Not allowing any slack may have an impact on performance (for smaller primes),
+/// and a non-zero value is recommended.
+const SLACK_BITSIZE: usize = 7;
 
 /// Finds a prime p and the prime factors of its order such that p has a subgroup of order d
-fn find_prime<D: Borrow<Int>>(bitsize: usize, d: D) -> (Int, Vec<Int>) 
+fn find_prime<I: Borrow<Int>>(bitsize: usize, order_divisor: I) -> (Int, Vec<Int>) 
 {
     loop {
         let k1 = sample_prime(bitsize);
         
-        // allowing this k2 factor seems to save some sampling (one iteration of loop enough seems)
-        for k2 in (1..SLACK_BOUND).map(|n| Int::from(n)) {
-            let candidate = &k1 * &k2 * d.borrow() + 1;
+        for k2 in (1..(1<<SLACK_BITSIZE)+1).map(|n| Int::from(n)) {
+            let candidate = &k1 * &k2 * order_divisor.borrow() + 1;
             
             if is_prime(&candidate) {     
                 let mut prime_factors = vec![k1];
                 prime_factors.extend(prime_factor(k2));
-                prime_factors.extend(prime_factor(d.borrow()));
+                prime_factors.extend(prime_factor(order_divisor.borrow()));
                 prime_factors.sort();
                 prime_factors.dedup();
                 return (candidate, prime_factors)
@@ -287,14 +286,14 @@ fn find_prime<D: Borrow<Int>>(bitsize: usize, d: D) -> (Int, Vec<Int>)
 }
 
 /// Finds a generator of Z_p given the prime factors of p-1
-fn find_generator<P: Borrow<Int>>(p: P, prime_factors: &[Int]) -> Int 
+fn find_generator<I: Borrow<Int>>(prime: I, order_prime_factors: &[Int]) -> Int 
 {
-    let q = p.borrow() - 1;
+    let order = prime.borrow() - 1;
     let mut candidate = Int::from(2);
     loop {
-        if prime_factors.iter().all(|factor| {
-            let exponent = &q / factor;
-            modpow(&candidate, &exponent, p.borrow()) != Int::one()
+        if order_prime_factors.iter().all(|factor| {
+            let exponent = &order / factor;
+            modpow(&candidate, &exponent, prime.borrow()) != Int::one()
         }) {
             return candidate
         }
@@ -335,8 +334,6 @@ fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
     let recalibrated_bitsize = desired_bitsize - bit_length(order_divisor) + 1;
     
     let (prime, generator) = find_field(recalibrated_bitsize, Int::from(order_divisor));
-    assert![prime.bit_length() as usize >= desired_bitsize];
-    assert![prime.bit_length() as usize <= desired_bitsize + bit_length(SLACK_BOUND) + 1]; // TODO verify +1 rounding
     
     let order = &prime - 1;
     let exponent_n = &order / Int::from(n);
@@ -344,8 +341,11 @@ fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
     let omega_n = modpow(&generator, &exponent_n, &prime);
     let omega_m = modpow(&generator, &exponent_m, &prime);
     
+    // sanity checks
     use std::collections::HashSet;
     assert![ is_prime(&prime) ];
+    assert![prime.bit_length() as usize >= desired_bitsize];
+    assert![prime.bit_length() as usize <= desired_bitsize + SLACK_BITSIZE + 1]; // TODO verify +1 rounding
     assert!(&order % Int::from(n) == 0);
     assert!(&order % Int::from(m) == 0);
     assert![ modpow(&omega_n, Int::from(n), &prime) == Int::one() ];
@@ -358,7 +358,7 @@ fn find_parameters(desired_bitsize: usize, n: usize, m: usize) -> Parameters
     assert![ ! group_m.contains(&Int::one()) ];
     assert![ group_n.intersection(&group_m).count() == 0 ];
     
-    return Parameters {
+    Parameters {
         prime: prime,
         generator: generator,
         omega_n: omega_n,
@@ -380,7 +380,14 @@ fn test_find_parameters() {
 }
 
 fn main() {
-    let params = find_parameters(128, 2*2*2*2*2*2*2*2, 9*9*9);
+    let bitsize = 128;
+    let n = usize::pow(2, 10);
+    let m = usize::pow(3, 7);
+    println!("n: {:?}", n);
+    println!("m: {:?}", m);
+    
+    // let m = 
+    let params = find_parameters(bitsize, n, m);
     println!("{:?}", params);
     assert!(is_prime(&params.prime));
 }
